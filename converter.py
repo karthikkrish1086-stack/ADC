@@ -589,3 +589,99 @@ SOURCE_CONNECTORS = {
         "live": False,
     },
 }
+
+
+# ----------------------------------------------------------------------------
+# STRING-BASED ENTRY POINTS (for uploaded workflow content, not a file path)
+# ----------------------------------------------------------------------------
+def _parse_root(xml_text):
+    return etree.fromstring(xml_text.encode("utf-8") if isinstance(xml_text, str) else xml_text)
+
+def parse_workflow_xml(xml_text):
+    """Same as parse_workflow but takes raw .yxmd XML text."""
+    root = _parse_root(xml_text)
+    nodes = {}
+    for node in root.findall(".//Node"):
+        tid = node.get("ToolID")
+        gui = node.find("GuiSettings")
+        plugin = gui.get("Plugin") if gui is not None else None
+        cfg = node.find(".//Configuration")
+        ann = node.find(".//Annotation/Name")
+        nodes[tid] = {"id": tid, "tool": short_tool(plugin), "plugin": plugin,
+                      "config": cfg, "name": ann.text if ann is not None else "", "inputs": []}
+    conns = []
+    for c in root.findall(".//Connection"):
+        o, d = c.find("Origin"), c.find("Destination")
+        conns.append((o.get("ToolID"), o.get("Connection"), d.get("ToolID"), d.get("Connection")))
+        nodes[d.get("ToolID")]["inputs"].append((o.get("ToolID"), o.get("Connection"), d.get("Connection")))
+    order = topo_sort(nodes, conns)
+    return nodes, conns, order
+
+def generate_source_xml(xml_text):
+    nodes, conns, order = parse_workflow_xml(xml_text)
+    stats = Stats()
+    body = []
+    for tid in order:
+        body.append(translate(nodes[tid], nodes, stats))
+    src = RUNTIME + "\n\n# === Generated workflow ===\n" + "\n".join(body) + "\n"
+    return src, stats, nodes, order, body
+
+def describe_workflow_xml(xml_text):
+    nodes, conns, order = parse_workflow_xml(xml_text)
+    return _describe_from_nodes(nodes, order)
+
+def input_files_in_xml(xml_text):
+    """Return the list of input CSV filenames the workflow expects to read."""
+    nodes, conns, order = parse_workflow_xml(xml_text)
+    files = []
+    for tid in order:
+        n = nodes[tid]
+        if n["tool"] == "DbFileInput" and n["config"] is not None:
+            f = n["config"].findtext("File")
+            if f:
+                files.append(f.split("/")[-1])
+    return files
+
+def _describe_from_nodes(nodes, order):
+    out = []
+    for tid in order:
+        n = nodes[tid]; cfg = n["config"]; tool = n["tool"]; detail = ""
+        try:
+            if tool == "DbFileInput": detail = f"Read {cfg.findtext('File')}"
+            elif tool == "DbFileOutput": detail = f"Write {cfg.findtext('File')}"
+            elif tool == "Filter": detail = cfg.findtext("Expression") or ""
+            elif tool == "AlteryxSelect":
+                keep = [sf.get("field") for sf in cfg.findall(".//SelectField") if sf.get("selected") == "True"]
+                detail = "Keep: " + ", ".join(keep)
+            elif tool == "CreatePoints": detail = f"Point from {cfg.find('XField').get('field')}, {cfg.find('YField').get('field')}"
+            elif tool == "Formula":
+                detail = " ; ".join(f"{ff.get('field')} = {ff.get('expression')}" for ff in cfg.findall(".//FormulaField"))
+            elif tool == "Summarize":
+                detail = ", ".join(f"{sf.get('action')}({sf.get('field')})" for sf in cfg.findall(".//SummarizeField"))
+            elif tool == "Buffer": detail = f"{cfg.findtext('BufferSize')} {cfg.findtext('BufferUnits')} around {cfg.find('SpatialField').get('field')}"
+            elif tool == "SpatialMatch": detail = f"{cfg.find('TargetField').get('field')} within {cfg.find('UniverseField').get('field')}"
+        except Exception:
+            detail = ""
+        friendly = {"DbFileInput": "Input Data", "DbFileOutput": "Output Data", "Filter": "Filter",
+                    "AlteryxSelect": "Select", "CreatePoints": "Create Points", "Formula": "Formula",
+                    "Summarize": "Summarize", "Buffer": "Buffer (Trade Area)", "SpatialMatch": "Spatial Match"}.get(tool, tool)
+        out.append({"id": tid, "tool": friendly, "name": n["name"], "detail": detail, "raw_tool": tool})
+    return out
+
+
+# ----------------------------------------------------------------------------
+# FULL SCRIPT ASSEMBLY (complete, runnable .py with header) for display/download
+# ----------------------------------------------------------------------------
+def full_script(src, title="workflow"):
+    """Wrap the generated source with a docstring header so it reads as a complete module."""
+    header = (
+        '"""\n'
+        f'Auto-generated Python conversion of Alteryx workflow: {title}\n'
+        'Produced by the Alteryx->Python converter (POC).\n'
+        'Tags in comments: [TEMPLATE] = rule-based mapping, [AI] = AI-translated\n'
+        'spatial/formula logic that has no 1:1 Alteryx->pandas equivalent.\n'
+        '\n'
+        'Run:  python generated.py   (expects input CSVs under data/, writes to output/)\n'
+        '"""\n'
+    )
+    return header + src
