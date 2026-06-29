@@ -1,7 +1,8 @@
 """
 Alteryx -> Python conversion — live demo app (stakeholder edition).
-For each workflow it shows: the original Alteryx flow, the converted Python,
-the output data, and a side-by-side OLD vs NEW comparison proving parity.
+For each workflow: original Alteryx flow + raw .yxmd code on the left,
+converted Python on the right, and an OLD vs NEW data match below.
+Plus a Source Connectors tab (API / Hive / Flat File / Kafka).
 Needs only: streamlit, pandas, numpy.
 """
 import streamlit as st
@@ -212,7 +213,7 @@ def render_code(body_lines):
 
 st.markdown('<div class="eyebrow">Alteryx to Python · Migration Proof of Concept</div>', unsafe_allow_html=True)
 st.markdown("# See it convert, then see the numbers match")
-st.markdown('<p class="lede">For each workflow: the original Alteryx flow on the left, the AI-converted Python on the right, '
+st.markdown('<p class="lede">For each workflow: the original Alteryx flow and its .yxmd code on the left, the AI-converted Python on the right, '
             'then the output of the old flow and the new flow side by side. If the numbers match, the conversion is trustworthy.</p>',
             unsafe_allow_html=True)
 
@@ -243,8 +244,8 @@ for tab, key in zip(wf_tabs, WORKFLOWS):
         with a:
             st.markdown('<div class="sectlabel">Original Alteryx workflow</div>', unsafe_allow_html=True)
             st.markdown(render_flow(steps), unsafe_allow_html=True)
-            with st.expander("View raw .yxmd XML"):
-                st.code(cv.raw_xml(wf["file"]), language="xml")
+            st.markdown('<div class="sectlabel" style="margin-top:.8rem;">Original Alteryx code (.yxmd source)</div>', unsafe_allow_html=True)
+            st.code(cv.raw_xml(wf["file"]), language="xml")
         with b:
             st.markdown('<div class="sectlabel">Converted Python · green = AI-translated</div>', unsafe_allow_html=True)
             st.markdown('<div class="codewrap"><div class="codehead">'
