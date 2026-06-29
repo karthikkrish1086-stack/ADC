@@ -1,0 +1,42 @@
+# Alteryx → Python — Live Conversion Demo (Streamlit)
+
+A local web app that converts Alteryx geospatial workflows to Python end-to-end:
+loads the data, parses the workflow, AI-translates the spatial/formula logic,
+runs the generated code, and validates output parity — all in the browser.
+
+## Run it (gives you a live link: http://localhost:8501)
+
+**Mac / Linux**
+    ./run_demo.sh
+
+**Windows**
+    run_demo.bat
+
+**Or manually** (any OS)
+    pip install -r requirements.txt
+    streamlit run app.py
+
+Streamlit prints a "Local URL: http://localhost:8501" — open it in any browser.
+That is your live link for the demo. Nothing leaves your machine.
+
+## Using it in the demo
+1. Two workflows are preloaded: **Simple — Store Filter** and **Complex — Trade-Area Capture**.
+2. The source data (40 stores, 500 customers) is shown at the top — that's "loading the data".
+3. Pick a workflow, press **Run conversion**.
+4. Left = generated Python with `[AI]` / `[TEMPLATE]` lines highlighted.
+   Right = the executed output + a **PARITY PASS** badge.
+5. Expand "What the AI layer translated" to show the exact spatial/formula expressions
+   the model converted (haversine distance, point-in-polygon, multi-condition IF logic).
+
+## Files
+- `app.py`          — the Streamlit UI
+- `converter.py`    — XML parser + DAG + template/AI translation + in-memory runner
+- `workflows/`      — the two preloaded Alteryx .yxmd files
+- `requirements.txt`, `run_demo.sh`, `run_demo.bat`
+
+## Notes
+- Needs only streamlit + pandas + numpy. No GeoPandas required for the demo
+  (haversine math stands in; production target is GeoPandas/Shapely — shown in code comments).
+- AI translations are cached so the demo always runs offline. To go live, wire
+  `converter.ai_translate_formula` to a model API and keep the parity check as a gate.
+- First launch installs Streamlit (~20s). Run it once before the demo so that's off-stage.
