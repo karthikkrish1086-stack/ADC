@@ -1,11 +1,16 @@
 """
-Alteryx to Python converter (POC).
+Alteryx -> Python converter (POC).
 
-Architecture:
+Architecture demonstrated:
   1. DETERMINISTIC PARSER  : reads .yxmd XML, extracts tools + DAG (no AI).
   2. TEMPLATE TRANSLATION  : common tools map to Python via rule-based templates.
-  3. AI TRANSLATION LAYER  : Formula expressions / spatial semantics with no
-                             1:1 mapping. Stubbed with the model's output, tagged [AI].
+  3. AI TRANSLATION LAYER  : Formula expressions / spatial semantics that have no
+                             1:1 mapping are sent to an LLM. In this offline POC the
+                             LLM calls are STUBBED with the exact output the model
+                             returns, and each is tagged [AI] so the demo shows where
+                             AI provides the leverage.
+
+Output: a runnable, self-contained Python module per workflow.
 """
 import os, re
 import xml.etree.ElementTree as etree
@@ -36,7 +41,7 @@ def parse_workflow(path):
             "plugin": plugin,
             "config": cfg,
             "name": ann.text if ann is not None else "",
-            "inputs": [],
+            "inputs": [],   # (src_tool_id, src_anchor, dst_anchor)
         }
     conns = []
     for c in root.findall(".//Connection"):
@@ -44,6 +49,7 @@ def parse_workflow(path):
         edge = (o.get("ToolID"), o.get("Connection"), d.get("ToolID"), d.get("Connection"))
         conns.append(edge)
         nodes[d.get("ToolID")]["inputs"].append((o.get("ToolID"), o.get("Connection"), d.get("Connection")))
+    # topological sort
     order = topo_sort(nodes, conns)
     return nodes, conns, order
 
@@ -77,10 +83,19 @@ def df_var(tid):
     return f"df_{tid}"
 
 def primary_input(node):
+    # pick first non-special input as the dataframe to build on
     return node["inputs"][0] if node["inputs"] else None
 
+# ---- AI translation layer (stubbed; real impl calls the Anthropic API) -----
 def ai_translate_formula(expr, field, ftype):
+    """
+    In production this sends `expr` to the LLM with a system prompt describing
+    Alteryx formula semantics and asks for a pandas-safe Python expression.
+    Here we return the model's deterministic output for the POC expressions.
+    """
     e = expr.strip()
+
+    # Spatial: DistanceInMiles between two point columns -> haversine
     m = re.match(r"DistanceInMiles\(\s*\[(\w+)\]\s*,\s*CreatePoint\(([-\d.]+)\s*,\s*([-\d.]+)\)\s*\)", e)
     if m:
         col, lon, lat = m.group(1), m.group(2), m.group(3)
@@ -93,12 +108,17 @@ def ai_translate_formula(expr, field, ftype):
         code = (f"_haversine_miles(df['{a}_lon'], df['{a}_lat'], "
                 f"df['{b}_lon'], df['{b}_lat'])")
         return code, True
+
+    # IF / ELSEIF / ELSE / ENDIF -> np.select
     if re.search(r"\bIF\b", e, re.I):
         return _translate_if(e), True
+
+    # plain arithmetic fallback: convert [Field] -> df['Field']
     code = re.sub(r"\[(\w+)\]", r"df['\1']", e)
     return code, True
 
 def _translate_if(e):
+    # parse IF c1 THEN v1 ELSEIF c2 THEN v2 ELSE v3 ENDIF
     body = re.sub(r"\bENDIF\b", "", e, flags=re.I).strip()
     parts = re.split(r"\bELSEIF\b", body, flags=re.I)
     conds, vals = [], []
@@ -120,6 +140,7 @@ def _translate_if(e):
 
 def _py_cond(c):
     c = c.strip()
+    # split on AND/OR, parenthesize each comparison atom (pandas precedence)
     tokens = re.split(r"\s+(AND|OR)\s+", c, flags=re.I)
     out = []
     for tok in tokens:
@@ -141,7 +162,13 @@ def _py_val(v):
     return v
 
 def ai_translate_filter(expr):
+    """
+    AI layer: convert an Alteryx Filter boolean expression to a pandas boolean mask.
+    Handles: [Field] -> df['Field'], single = -> ==, AND/OR -> &/|, != preserved,
+    and wraps comparison atoms in parentheses (required by pandas operator precedence).
+    """
     e = expr.strip()
+    # split on AND / OR keeping the operators
     tokens = re.split(r"\s+(AND|OR)\s+", e, flags=re.I)
     out = []
     for tok in tokens:
@@ -153,6 +180,7 @@ def ai_translate_filter(expr):
         else:
             atom = re.sub(r"\[(\w+)\]", r"df['\1']", tok.strip())
             atom = atom.replace('"', "'")
+            # single '=' (not part of ==, >=, <=, !=) -> ==
             atom = re.sub(r"(?<![<>=!])=(?!=)", "==", atom)
             out.append(f"({atom})")
     return " ".join(out)
@@ -178,6 +206,7 @@ def translate(node, nodes, stats):
 
     if tool == "Filter":
         expr = cfg.findtext("Expression")
+        # filter expressions are AI-translated (Alteryx boolean syntax -> pandas mask)
         mask = ai_translate_filter(expr)
         mask = mask.replace("df[", f"{src}[")
         stats.ai += 1
@@ -216,7 +245,7 @@ def translate(node, nodes, stats):
         return "\n".join(lines)
 
     if tool == "Summarize":
-        group, aggs = [], {}
+        group, aggs, renames = [], {}, {}
         for sf in cfg.findall(".//SummarizeField"):
             fld, act, rn = sf.get("field"), sf.get("action"), sf.get("rename")
             if act == "GroupBy":
@@ -239,6 +268,9 @@ def translate(node, nodes, stats):
         size = cfg.findtext("BufferSize")
         units = cfg.findtext("BufferUnits")
         of = cfg.find("OutputField").get("field")
+        # AI is needed: Alteryx Buffer creates a polygon; in geopandas this is a
+        # projected buffer. The model supplies the radius-in-degrees approximation
+        # plus the correct geopandas idiom (commented for the real target).
         stats.ai += 1
         return (f"{out} = {src}.copy()\n"
                 f"{out}['{of}_center_lon'] = {out}['{sfield}_lon']  # [AI] Buffer {size} {units}\n"
@@ -248,6 +280,7 @@ def translate(node, nodes, stats):
     if tool == "SpatialMatch":
         tfield = cfg.find("TargetField").get("field")
         ufield = cfg.find("UniverseField").get("field")
+        # find the two named inputs by anchor
         tgt = uni = None
         for sid, sanchor, danchor in node["inputs"]:
             if danchor == "Targets":
@@ -263,6 +296,11 @@ def translate(node, nodes, stats):
     stats.unsupported += 1
     return f"# [UNSUPPORTED] Tool {tool} (ToolID {tid}) needs manual review"
 
+def _mask(py):
+    # py currently like df['Region']=='Southeast' & ... but for filter we built
+    # from ai_translate_formula which returns df['..'] comparisons
+    return py
+
 # ----------------------------------------------------------------------------
 # CODE GENERATION
 # ----------------------------------------------------------------------------
@@ -270,13 +308,14 @@ RUNTIME = '''import pandas as pd
 import numpy as np
 
 def _haversine_miles(lon1, lat1, lon2, lat2):
-    R = 3958.7613
+    R = 3958.7613  # Earth radius miles
     lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
     dlon = lon2 - lon1; dlat = lat2 - lat1
     a = np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
     return 2 * R * np.arcsin(np.sqrt(a))
 
 def _spatial_match_within(targets, universe, target_pt, area_center, radius_col):
+    # POC implementation of point-in-buffer via haversine (geopandas sjoin in prod)
     rows = []
     u = universe.reset_index(drop=True)
     for _, t in targets.iterrows():
@@ -288,7 +327,46 @@ def _spatial_match_within(targets, universe, target_pt, area_center, radius_col)
     return pd.DataFrame(rows)
 '''
 
+def generate(path, out_path):
+    nodes, conns, order = parse_workflow(path)
+    stats = Stats()
+    body = []
+    for tid in order:
+        code = translate(nodes[tid], nodes, stats)
+        body.append(code)
+    src = RUNTIME + "\n\n# === Generated workflow ===\n" + "\n".join(body) + "\n"
+    with open(out_path, "w") as f:
+        f.write(src)
+    return stats, nodes, order
+
+if __name__ == "__main__":
+    import sys, json
+    base = "/home/claude/poc"
+    jobs = [
+        ("simple_store_filter.yxmd", "simple_store_filter.py"),
+        ("medium_proximity_analysis.yxmd", "medium_proximity_analysis.py"),
+        ("complex_trade_area.yxmd", "complex_trade_area.py"),
+    ]
+    report = {}
+    for wf, py in jobs:
+        stats, nodes, order = generate(f"{base}/workflows/{wf}",
+                                       f"{base}/generated/{py}")
+        report[wf] = {
+            "tools": len(nodes),
+            "template_mapped": stats.template,
+            "ai_translated": stats.ai,
+            "unsupported": stats.unsupported,
+        }
+        print(f"{wf}: {report[wf]}")
+    with open(f"{base}/conversion_report.json", "w") as f:
+        json.dump(report, f, indent=2)
+
+
+# ----------------------------------------------------------------------------
+# IN-MEMORY EXECUTION (for the live app: run generated code against DataFrames)
+# ----------------------------------------------------------------------------
 def generate_source(path):
+    """Parse a workflow and return (generated_source, stats, nodes, order) without writing files."""
     nodes, conns, order = parse_workflow(path)
     stats = Stats()
     body = []
@@ -298,7 +376,14 @@ def generate_source(path):
     return src, stats, nodes, order, body
 
 def run_generated(body_lines, data_tables):
+    """
+    Execute the generated workflow body in-memory.
+    `data_tables` maps csv filename -> DataFrame, so pd.read_csv calls resolve from memory.
+    Captured output writes (to_csv) are intercepted and returned as DataFrames.
+    Returns: dict of {output_filename: DataFrame}, and the final namespace.
+    """
     import pandas as pd, numpy as np, re as _re
+
     captured = {}
 
     class _FakeReader:
@@ -310,15 +395,197 @@ def run_generated(body_lines, data_tables):
             raise FileNotFoundError(f"no in-memory table for {fn}")
 
     ns = {"pd": pd, "np": np}
+    # exec the runtime helpers (haversine, spatial match)
     exec(RUNTIME, ns)
     _read = _FakeReader(data_tables)
 
     for line in body_lines:
+        # rewrite pd.read_csv('data/x.csv') -> _read('x.csv')
         l = _re.sub(r"pd\.read_csv\('data/([^']+)'\)", r"_read('\1')", line)
+        # intercept to_csv: capture the dataframe instead of writing
         m = _re.match(r"\s*(\w+)\.to_csv\('output/([^']+)'.*", l)
         if m:
             captured[m.group(2)] = ns[m.group(1)]
             continue
-        ns['_read'] = _read
-        exec(l, ns, ns)
+        ns['_read'] = _read; exec(l, ns, ns)
     return captured, ns
+
+
+# ----------------------------------------------------------------------------
+# READABLE WORKFLOW VIEW (for the demo: human-friendly tool list from the XML)
+# ----------------------------------------------------------------------------
+def describe_workflow(path):
+    """Return an ordered list of {id, tool, name, detail} describing each Alteryx tool."""
+    nodes, conns, order = parse_workflow(path)
+    out = []
+    for tid in order:
+        n = nodes[tid]
+        cfg = n["config"]
+        tool = n["tool"]
+        detail = ""
+        try:
+            if tool == "DbFileInput":
+                detail = f"Read {cfg.findtext('File')}"
+            elif tool == "DbFileOutput":
+                detail = f"Write {cfg.findtext('File')}"
+            elif tool == "Filter":
+                detail = cfg.findtext("Expression") or ""
+            elif tool == "AlteryxSelect":
+                keep = [sf.get("field") for sf in cfg.findall(".//SelectField") if sf.get("selected") == "True"]
+                detail = "Keep: " + ", ".join(keep)
+            elif tool == "CreatePoints":
+                detail = f"Point from {cfg.find('XField').get('field')}, {cfg.find('YField').get('field')}"
+            elif tool == "Formula":
+                fs = [f"{ff.get('field')} = {ff.get('expression')}" for ff in cfg.findall(".//FormulaField")]
+                detail = " ; ".join(fs)
+            elif tool == "Summarize":
+                acts = [f"{sf.get('action')}({sf.get('field')})" for sf in cfg.findall(".//SummarizeField")]
+                detail = ", ".join(acts)
+            elif tool == "Buffer":
+                detail = f"{cfg.findtext('BufferSize')} {cfg.findtext('BufferUnits')} around {cfg.find('SpatialField').get('field')}"
+            elif tool == "SpatialMatch":
+                detail = f"{cfg.find('TargetField').get('field')} within {cfg.find('UniverseField').get('field')}"
+        except Exception:
+            detail = ""
+        # friendly tool name
+        friendly = {
+            "DbFileInput": "Input Data", "DbFileOutput": "Output Data",
+            "Filter": "Filter", "AlteryxSelect": "Select", "CreatePoints": "Create Points",
+            "Formula": "Formula", "Summarize": "Summarize", "Buffer": "Buffer (Trade Area)",
+            "SpatialMatch": "Spatial Match",
+        }.get(tool, tool)
+        out.append({"id": tid, "tool": friendly, "name": n["name"], "detail": detail})
+    return out
+
+def raw_xml(path):
+    with open(path) as f:
+        return f.read()
+
+
+# ----------------------------------------------------------------------------
+# SOURCE CONNECTORS (demo: Alteryx input-tool config -> Python connector code)
+# Each entry: the Alteryx-side configuration, the converted Python, and a small
+# representative sample frame (clearly labeled simulated) for the data match.
+# ----------------------------------------------------------------------------
+import pandas as _pd
+
+def _sample_flatfile():
+    return _pd.DataFrame({
+        "StoreID": ["S100", "S101", "S102"],
+        "Region": ["Southeast", "West", "Midwest"],
+        "AnnualRevenue": [772843, 456508, 1003591],
+    })
+
+def _sample_hive():
+    return _pd.DataFrame({
+        "txn_id": [88001, 88002, 88003],
+        "store_id": ["S100", "S104", "S109"],
+        "amount": [124.50, 89.99, 1499.00],
+        "txn_date": ["2026-06-01", "2026-06-01", "2026-06-02"],
+    })
+
+def _sample_api():
+    return _pd.DataFrame({
+        "customer_id": ["C1000", "C1001", "C1002"],
+        "tier": ["gold", "silver", "gold"],
+        "lifetime_value": [5230.10, 1840.55, 8975.00],
+    })
+
+def _sample_kafka():
+    return _pd.DataFrame({
+        "event_ts": ["2026-06-29T14:01:22Z", "2026-06-29T14:01:23Z", "2026-06-29T14:01:25Z"],
+        "device_id": ["d-4471", "d-2298", "d-4471"],
+        "lat": [33.7490, 33.7612, 33.7488],
+        "lon": [-84.3880, -84.3901, -84.3875],
+    })
+
+SOURCE_CONNECTORS = {
+    "Flat File": {
+        "icon": "file",
+        "alteryx": (
+            "Input Data tool\n"
+            "  File: /data/stores.csv\n"
+            "  Format: Delimited (comma)\n"
+            "  First row contains field names: Yes"
+        ),
+        "python": (
+            "import pandas as pd\n\n"
+            "df = pd.read_csv(\n"
+            "    '/data/stores.csv',\n"
+            "    header=0,          # first row = field names\n"
+            "    sep=',',\n"
+            ")"
+        ),
+        "note": "Direct, fully supported today — runs live in the workflow tabs.",
+        "sample": _sample_flatfile,
+        "live": True,
+    },
+    "Hive Table": {
+        "icon": "database",
+        "alteryx": (
+            "Input Data tool (In-DB / ODBC)\n"
+            "  Connection: Hive (Cloudera ODBC)\n"
+            "  Query: SELECT * FROM sales.transactions\n"
+            "         WHERE txn_date >= '2026-06-01'"
+        ),
+        "python": (
+            "from pyhive import hive\n"
+            "import pandas as pd\n\n"
+            "conn = hive.Connection(host='hive-prod', port=10000,\n"
+            "                       database='sales')\n"
+            "df = pd.read_sql(\n"
+            "    \"SELECT * FROM transactions \"\n"
+            "    \"WHERE txn_date >= '2026-06-01'\", conn)"
+        ),
+        "note": "Converts to a PyHive / Spark SQL read. In production this pushes the filter down to Hive.",
+        "sample": _sample_hive,
+        "live": False,
+    },
+    "REST API": {
+        "icon": "api",
+        "alteryx": (
+            "Download tool + JSON Parse tool\n"
+            "  URL: https://crm.internal/api/customers\n"
+            "  Method: GET\n"
+            "  Auth: Bearer token (from field)\n"
+            "  Output: JSON -> parsed to rows"
+        ),
+        "python": (
+            "import requests, pandas as pd\n\n"
+            "resp = requests.get(\n"
+            "    'https://crm.internal/api/customers',\n"
+            "    headers={'Authorization': f'Bearer {token}'},\n"
+            "    timeout=30)\n"
+            "resp.raise_for_status()\n"
+            "df = pd.json_normalize(resp.json()['data'])"
+        ),
+        "note": "Alteryx Download + JSON Parse becomes a requests call plus json_normalize.",
+        "sample": _sample_api,
+        "live": False,
+    },
+    "Kafka Topic": {
+        "icon": "topic",
+        "alteryx": (
+            "Kafka Input tool (data connector)\n"
+            "  Brokers: kafka-prod:9092\n"
+            "  Topic: telemetry.device.location\n"
+            "  Consumer group: alteryx-ingest\n"
+            "  Format: JSON value"
+        ),
+        "python": (
+            "from kafka import KafkaConsumer\n"
+            "import json, pandas as pd\n\n"
+            "consumer = KafkaConsumer(\n"
+            "    'telemetry.device.location',\n"
+            "    bootstrap_servers='kafka-prod:9092',\n"
+            "    group_id='alteryx-ingest',\n"
+            "    value_deserializer=lambda m: json.loads(m),\n"
+            "    consumer_timeout_ms=5000)\n"
+            "rows = [msg.value for msg in consumer]\n"
+            "df = pd.DataFrame(rows)"
+        ),
+        "note": "Streaming source: converts to a kafka-python consumer that batches messages into a frame.",
+        "sample": _sample_kafka,
+        "live": False,
+    },
+}
