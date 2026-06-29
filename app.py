@@ -1,8 +1,7 @@
 """
 Alteryx -> Python conversion — live demo app (stakeholder edition).
-For each workflow: original Alteryx flow + raw .yxmd code on the left,
-converted Python on the right, and an OLD vs NEW data match below.
-Plus a Source Connectors tab (API / Hive / Flat File / Kafka).
+For each workflow it shows: the original Alteryx flow, the converted Python,
+the output data, and a side-by-side OLD vs NEW comparison proving parity.
 Needs only: streamlit, pandas, numpy.
 """
 import streamlit as st
@@ -213,13 +212,14 @@ def render_code(body_lines):
 
 st.markdown('<div class="eyebrow">Alteryx to Python · Migration Proof of Concept</div>', unsafe_allow_html=True)
 st.markdown("# See it convert, then see the numbers match")
-st.markdown('<p class="lede">For each workflow: the original Alteryx flow and its .yxmd code on the left, the AI-converted Python on the right, '
+st.markdown('<p class="lede">For each workflow: the original Alteryx flow on the left, the AI-converted Python on the right, '
             'then the output of the old flow and the new flow side by side. If the numbers match, the conversion is trustworthy.</p>',
             unsafe_allow_html=True)
 
-tab_labels = [f"{k} — {WORKFLOWS[k]['title']}" for k in WORKFLOWS] + ["Source Connectors"]
+tab_labels = [f"{k} — {WORKFLOWS[k]['title']}" for k in WORKFLOWS] + ["Try Your Own", "Source Connectors"]
 tabs = st.tabs(tab_labels)
 wf_tabs = tabs[:len(WORKFLOWS)]
+upload_tab = tabs[-2]
 source_tab = tabs[-1]
 
 for tab, key in zip(wf_tabs, WORKFLOWS):
@@ -249,9 +249,15 @@ for tab, key in zip(wf_tabs, WORKFLOWS):
         with b:
             st.markdown('<div class="sectlabel">Converted Python · green = AI-translated</div>', unsafe_allow_html=True)
             st.markdown('<div class="codewrap"><div class="codehead">'
-                        '<span class="l">generated.py</span>'
+                        '<span class="l">workflow logic (highlighted)</span>'
                         '<span><span class="tag-ai">[AI]</span> &nbsp; <span class="tag-tpl">[TEMPLATE]</span></span>'
                         '</div>' + render_code(body) + '</div>', unsafe_allow_html=True)
+            full = cv.full_script(src, f"{key} - {wf['title']}")
+            with st.expander("Full runnable script (imports + helpers + logic)"):
+                st.code(full, language="python")
+            st.download_button("Download generated .py", full,
+                               file_name=f"{key.lower()}_{wf['title'].lower().replace(' ','_')}.py",
+                               mime="text/x-python", key=f"dl_{key}")
 
         captured, _ = cv.run_generated(body, TABLES)
         out_name = list(captured.keys())[0]
@@ -288,6 +294,148 @@ for tab, key in zip(wf_tabs, WORKFLOWS):
                 for l in ai_lines:
                     expr = l.split("# [AI]", 1)[1].strip() if "# [AI]" in l else l
                     st.markdown(f"- `{expr}`")
+
+with upload_tab:
+    st.markdown("#### Try your own workflow")
+    st.caption("Upload an Alteryx .yxmd file. The converter parses it, generates Python, runs it on data, and reports the result. "
+               "Supported tools: Input, Filter, Select, Create Points, Formula, Summarize, Buffer, Spatial Match. "
+               "Unsupported tools are flagged rather than silently skipped.")
+
+    up = st.file_uploader("Alteryx workflow (.yxmd)", type=["yxmd", "xml"])
+
+    if up is None:
+        st.info("Upload a .yxmd file to begin. Tip: you can download one of the built-in workflows from the repo's "
+                "workflows/ folder to try the flow end to end.")
+    else:
+        try:
+            xml_text = up.read().decode("utf-8", errors="replace")
+            src, stats, nodes, order, body = cv.generate_source_xml(xml_text)
+            steps = cv.describe_workflow_xml(xml_text)
+            needed = cv.input_files_in_xml(xml_text)
+
+            st.markdown(
+                f'<div class="chips">'
+                f'<div class="chip"><div class="v v-ice">{len(nodes)}</div><div class="k">tools</div></div>'
+                f'<div class="chip"><div class="v v-deep">{stats.template}</div><div class="k">template</div></div>'
+                f'<div class="chip"><div class="v v-green">{stats.ai}</div><div class="k">AI-translated</div></div>'
+                f'<div class="chip"><div class="v v-amber">{stats.unsupported}</div><div class="k">unsupported</div></div>'
+                f'</div>', unsafe_allow_html=True)
+
+            if stats.unsupported:
+                unsup = [s["raw_tool"] for s in steps if s["raw_tool"] not in (
+                    "DbFileInput","DbFileOutput","Filter","AlteryxSelect","CreatePoints",
+                    "Formula","Summarize","Buffer","SpatialMatch")]
+                st.warning(f"This workflow uses tools the converter does not handle yet: "
+                           f"{', '.join(sorted(set(unsup))) or 'see flagged lines'}. "
+                           f"Those lines are marked [UNSUPPORTED] and would need a converter rule or manual review.")
+
+            st.markdown("<hr>", unsafe_allow_html=True)
+            a, b = st.columns(2)
+            with a:
+                st.markdown('<div class="sectlabel">Uploaded Alteryx workflow</div>', unsafe_allow_html=True)
+                st.markdown(render_flow(steps), unsafe_allow_html=True)
+                st.markdown('<div class="sectlabel" style="margin-top:.8rem;">Uploaded .yxmd source</div>', unsafe_allow_html=True)
+                st.code(xml_text, language="xml")
+            with b:
+                st.markdown('<div class="sectlabel">Converted Python · green = AI-translated</div>', unsafe_allow_html=True)
+                st.markdown('<div class="codewrap"><div class="codehead">'
+                            '<span class="l">workflow logic (highlighted)</span>'
+                            '<span><span class="tag-ai">[AI]</span> &nbsp; <span class="tag-tpl">[TEMPLATE]</span></span>'
+                            '</div>' + render_code(body) + '</div>', unsafe_allow_html=True)
+                full_up = cv.full_script(src, up.name)
+                with st.expander("Full runnable script (imports + helpers + logic)"):
+                    st.code(full_up, language="python")
+                st.download_button("Download generated .py", full_up,
+                                   file_name=(up.name.rsplit('.',1)[0] + ".py"),
+                                   mime="text/x-python", key="dl_upload")
+
+            # resolve input data: use built-in samples where names match, else ask for upload
+            st.markdown("<hr>", unsafe_allow_html=True)
+            st.markdown('<div class="sectlabel">Input data</div>', unsafe_allow_html=True)
+            run_tables = {}
+            missing = []
+            for fn in needed:
+                if fn in TABLES:
+                    run_tables[fn] = TABLES[fn]
+                    st.caption(f"{fn}: using built-in sample data ({TABLES[fn].shape[0]} rows).")
+                else:
+                    missing.append(fn)
+            uploaded_csvs = {}
+            if missing:
+                st.caption(f"This workflow needs data files not built into the demo: {', '.join(missing)}. "
+                           f"Upload a CSV for each to run it.")
+                for fn in missing:
+                    cf = st.file_uploader(f"CSV for {fn}", type=["csv"], key=f"csv_{fn}")
+                    if cf is not None:
+                        uploaded_csvs[fn] = pd.read_csv(cf)
+                        run_tables[fn] = uploaded_csvs[fn]
+
+            can_run = len(run_tables) == len(needed) and stats.unsupported == 0
+            st.markdown("<hr>", unsafe_allow_html=True)
+            if stats.unsupported:
+                st.info("Conversion is shown above. Execution is skipped because the workflow contains unsupported tools.")
+            elif not can_run:
+                st.info("Provide the required input data above to run the converted Python and see its output.")
+            else:
+                captured, _ = cv.run_generated(body, run_tables)
+                if not captured:
+                    st.warning("The workflow produced no Output Data tool, so there is nothing to write. "
+                               "Add an Output tool to see results.")
+                else:
+                    out_name = list(captured.keys())[0]
+                    new_raw = captured[out_name]
+                    new_df = new_raw.sort_values(list(new_raw.columns)).reset_index(drop=True)
+
+                    # parity only where a known reference matches the output signature
+                    ref_fn = None
+                    sig = tuple(new_df.columns)
+                    known = {
+                        ("AnnualRevenue","Region","StoreID","StoreName"): "Simple",
+                        ("AvgDistance","CustomerCount","ProximityTier","TotalLTV"): "Medium",
+                        ("AvgCustDistance","CapturedCustomers","CapturedLTV","StoreID","StoreName"): "Complex",
+                    }
+                    ref_key = known.get(tuple(sorted(sig)))
+                    if ref_key and run_tables == {k: TABLES[k] for k in run_tables}:
+                        old_df = REFS[ref_key]().sort_values(list(REFS[ref_key]().columns)).reset_index(drop=True)
+                        identical, summ = compare(old_df, new_df)
+                        if identical:
+                            st.markdown(
+                                f'<div class="verdict"><div class="big">MATCH</div>'
+                                f'<div class="sub">Output matches an independent reference for this pattern — '
+                                f'{summ["cell_match"]}/{summ["cell_total"]} cells equal.</div></div>',
+                                unsafe_allow_html=True)
+                        else:
+                            st.markdown(
+                                f'<div class="verdict fail"><div class="big">DIFFERENCE FOUND</div>'
+                                f'<div class="sub">{summ["cell_match"]}/{summ["cell_total"]} cells matched.</div></div>',
+                                unsafe_allow_html=True)
+                        cc, dd = st.columns(2)
+                        with cc:
+                            st.markdown('<div class="sectlabel">Output — reference (ground truth)</div>', unsafe_allow_html=True)
+                            st.dataframe(old_df, use_container_width=True, height=300)
+                        with dd:
+                            st.markdown('<div class="sectlabel">Output — converted Python</div>', unsafe_allow_html=True)
+                            st.dataframe(new_df, use_container_width=True, height=300)
+                    else:
+                        st.markdown(
+                            '<div class="verdict" style="background:rgba(143,193,212,.1);border-color:var(--sky);">'
+                            '<div class="big" style="color:var(--sky);">RAN SUCCESSFULLY</div>'
+                            '<div class="sub">The converted Python executed and produced output below. '
+                            'No independent reference exists for an arbitrary workflow, so this shows the result rather than a parity check. '
+                            'In production, parity is validated against the original Alteryx run\'s output.</div></div>',
+                            unsafe_allow_html=True)
+                        st.markdown('<div class="sectlabel">Output — converted Python</div>', unsafe_allow_html=True)
+                        st.dataframe(new_df, use_container_width=True, height=320)
+
+            ai_lines = [l for bb in body for l in bb.split("\n") if "[AI]" in l]
+            if ai_lines:
+                with st.expander(f"What the AI layer translated ({len(ai_lines)} expressions)"):
+                    for l in ai_lines:
+                        expr = l.split("# [AI]", 1)[1].strip() if "# [AI]" in l else l
+                        st.markdown(f"- `{expr}`")
+
+        except Exception as e:
+            st.error(f"Could not process this file. It may not be a valid Alteryx .yxmd workflow. Details: {e}")
 
 with source_tab:
     st.markdown("#### Source connectors")
