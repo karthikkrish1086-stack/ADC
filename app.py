@@ -70,6 +70,11 @@ pre.code{ margin:0; padding:.6rem .8rem; font-family:var(--mono); font-size:.75r
 .stButton>button{ background:var(--deep); color:#fff; border:0; border-radius:9px; font-weight:700; }
 .stButton>button:hover{ background:#2487AC; color:#fff; }
 .stTabs [data-baseweb="tab"]{ font-weight:700; }
+.usecase{ background:rgba(143,193,212,.07); border:1px solid var(--line); border-left:3px solid var(--sky);
+  border-radius:0 9px 9px 0; padding:.7rem .9rem; margin:.3rem 0 .6rem; }
+.usecase .q{ color:#D6E3EA; font-size:.9rem; line-height:1.45; }
+.usecase .d{ color:var(--mute); font-size:.82rem; margin-top:.4rem; line-height:1.4; }
+.usecase .d b{ color:var(--sky); font-weight:700; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -103,18 +108,24 @@ WORKFLOWS = {
         "title": "Store Filter",
         "file": "workflows/simple_store_filter.yxmd",
         "blurb": "A basic filter-and-select: keep Southeast stores earning over $500K. The everyday workflow that makes up most of a library.",
+        "usecase": "Business question: which stores belong to a target segment? A regional manager wants the list of high-revenue Southeast stores to focus a campaign.",
+        "demonstrates": "The bread-and-butter pattern — read a file, filter on a condition, trim columns, write the result. Most of a 3,000-workflow library looks like this.",
         "inputs": ["stores.csv"],
     },
     "Medium": {
         "title": "Customer Proximity",
         "file": "workflows/medium_proximity_analysis.yxmd",
         "blurb": "Spatial points, distance-to-HQ, tiered segmentation, and a summary. Introduces geospatial math and conditional logic.",
+        "usecase": "Business question: how far are our customers from headquarters, and how do they group? Marketing wants customers bucketed into Near / Mid / Far tiers with totals per tier.",
+        "demonstrates": "Geospatial distance (haversine) and conditional IF/ELSEIF logic — the first place a naive line-by-line conversion breaks, and where the AI layer earns its place.",
         "inputs": ["customers.csv"],
     },
     "Complex": {
         "title": "Trade-Area Capture",
         "file": "workflows/complex_trade_area.yxmd",
         "blurb": "Two data streams, 10-mile store buffers, point-in-polygon matching, segmentation and roll-up. The hard case that proves the approach.",
+        "usecase": "Business question: how many customers and how much lifetime value does each store capture within its 10-mile trade area? Real estate and sales planning rely on this.",
+        "demonstrates": "The hard case — two data streams, buffer polygons, point-in-polygon spatial matching, multi-condition segmentation and a roll-up. If the converter handles this, it handles the long tail.",
         "inputs": ["stores.csv", "customers.csv"],
     },
 }
@@ -226,7 +237,10 @@ for tab, key in zip(wf_tabs, WORKFLOWS):
     wf = WORKFLOWS[key]
     with tab:
         st.markdown(f"#### {key}: {wf['title']}")
-        st.caption(wf["blurb"])
+        st.markdown(
+            f'<div class="usecase"><div class="q">{html.escape(wf["usecase"])}</div>'
+            f'<div class="d"><b>What this demonstrates:</b> {html.escape(wf["demonstrates"])}</div></div>',
+            unsafe_allow_html=True)
 
         src, stats, nodes, order, body = cv.generate_source(wf["file"])
         steps = cv.describe_workflow(wf["file"])
