@@ -1,0 +1,93 @@
+<?xml version="1.0"?>
+<AlteryxDocument yxmdVer="2023.1">
+  <Nodes>
+    <Node ToolID="1">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.DbFileInput.DbFileInput">
+        <Position x="60" y="100" />
+      </GuiSettings>
+      <Properties>
+        <Configuration>
+          <File>customers.csv</File>
+        </Configuration>
+        <Annotation DisplayMode="0"><Name>Input Customers</Name></Annotation>
+      </Properties>
+      <EngineSettings EngineDllEntryPoint="AlteryxDbFileInput" />
+    </Node>
+    <Node ToolID="2">
+      <GuiSettings Plugin="AlteryxSpatialPluginsGui.CreatePoints.CreatePoints">
+        <Position x="200" y="100" />
+      </GuiSettings>
+      <Properties>
+        <Configuration>
+          <XField field="Longitude" />
+          <YField field="Latitude" />
+          <OutputField field="SpatialObj" />
+        </Configuration>
+        <Annotation DisplayMode="0"><Name>Create Customer Points</Name></Annotation>
+      </Properties>
+      <EngineSettings EngineDllEntryPoint="AlteryxCreatePoints" />
+    </Node>
+    <Node ToolID="3">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Formula.Formula">
+        <Position x="340" y="100" />
+      </GuiSettings>
+      <Properties>
+        <Configuration>
+          <FormulaFields>
+            <FormulaField expression="DistanceInMiles([SpatialObj], CreatePoint(-84.388, 33.749))" field="DistToHQ_Miles" size="8" type="Double" />
+          </FormulaFields>
+        </Configuration>
+        <Annotation DisplayMode="0"><Name>Distance to HQ</Name></Annotation>
+      </Properties>
+      <EngineSettings EngineDllEntryPoint="AlteryxFormula" />
+    </Node>
+    <Node ToolID="4">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Formula.Formula">
+        <Position x="480" y="100" />
+      </GuiSettings>
+      <Properties>
+        <Configuration>
+          <FormulaFields>
+            <FormulaField expression="IF [DistToHQ_Miles] &lt;= 25 THEN &quot;Near&quot; ELSEIF [DistToHQ_Miles] &lt;= 100 THEN &quot;Mid&quot; ELSE &quot;Far&quot; ENDIF" field="ProximityTier" size="10" type="String" />
+          </FormulaFields>
+        </Configuration>
+        <Annotation DisplayMode="0"><Name>Proximity Tier</Name></Annotation>
+      </Properties>
+      <EngineSettings EngineDllEntryPoint="AlteryxFormula" />
+    </Node>
+    <Node ToolID="5">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.Summarize.Summarize">
+        <Position x="620" y="100" />
+      </GuiSettings>
+      <Properties>
+        <Configuration>
+          <SummarizeFields>
+            <SummarizeField field="ProximityTier" action="GroupBy" rename="ProximityTier" />
+            <SummarizeField field="CustomerID" action="Count" rename="CustomerCount" />
+            <SummarizeField field="DistToHQ_Miles" action="Avg" rename="AvgDistance" />
+            <SummarizeField field="LifetimeValue" action="Sum" rename="TotalLTV" />
+          </SummarizeFields>
+        </Configuration>
+        <Annotation DisplayMode="0"><Name>Summarize by Tier</Name></Annotation>
+      </Properties>
+      <EngineSettings EngineDllEntryPoint="AlteryxSummarize" />
+    </Node>
+    <Node ToolID="6">
+      <GuiSettings Plugin="AlteryxBasePluginsGui.DbFileOutput.DbFileOutput">
+        <Position x="760" y="100" />
+      </GuiSettings>
+      <Properties>
+        <Configuration><File>customer_proximity_summary.csv</File></Configuration>
+        <Annotation DisplayMode="0"><Name>Output</Name></Annotation>
+      </Properties>
+      <EngineSettings EngineDllEntryPoint="AlteryxDbFileOutput" />
+    </Node>
+  </Nodes>
+  <Connections>
+    <Connection><Origin ToolID="1" Connection="Output" /><Destination ToolID="2" Connection="Input" /></Connection>
+    <Connection><Origin ToolID="2" Connection="Output" /><Destination ToolID="3" Connection="Input" /></Connection>
+    <Connection><Origin ToolID="3" Connection="Output" /><Destination ToolID="4" Connection="Input" /></Connection>
+    <Connection><Origin ToolID="4" Connection="Output" /><Destination ToolID="5" Connection="Input" /></Connection>
+    <Connection><Origin ToolID="5" Connection="Output" /><Destination ToolID="6" Connection="Input" /></Connection>
+  </Connections>
+</AlteryxDocument>
