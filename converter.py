@@ -8,7 +8,7 @@ Architecture:
                              1:1 mapping. Stubbed with the model's output, tagged [AI].
 """
 import os, re
-from lxml import etree
+import xml.etree.ElementTree as etree
 
 # ----------------------------------------------------------------------------
 # 1. DETERMINISTIC PARSER
